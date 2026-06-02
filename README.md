@@ -1,32 +1,59 @@
 # WhatsApp Web Automation - Free WhatsApp API Dashboard
 
-Free open-source WhatsApp Web automation API dashboard built with PHP, MySQL, Node.js, and Baileys. This repository helps developers build a local WhatsApp API system with linked-device QR login, API keys, queued message sending, rate limits, contacts, message logs, campaign tools, and webhook callbacks.
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![PHP](https://img.shields.io/badge/PHP-8%2B-777BB4.svg)](https://www.php.net/)
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933.svg)](https://nodejs.org/)
+[![MySQL](https://img.shields.io/badge/MySQL-8%2B-4479A1.svg)](https://www.mysql.com/)
+[![Baileys](https://img.shields.io/badge/Baileys-WhatsApp%20Web-25D366.svg)](https://github.com/WhiskeySockets/Baileys)
 
-Use this repo if you are looking for a free WhatsApp API, WhatsApp Web automation, WhatsApp API PHP project, Baileys WhatsApp API starter, open-source WhatsApp API dashboard, WhatsApp message API, WhatsApp webhook API, or a self-hosted WhatsApp automation panel.
+Free open-source WhatsApp Web automation API dashboard built with PHP, MySQL, Node.js, and Baileys. This repository helps developers create a self-hosted WhatsApp API system with linked-device QR login, API keys, queued message sending, rate limits, contact management, campaign tools, delivery logs, and webhook callbacks.
 
-Important: this uses WhatsApp Web linked-device automation through Baileys. It is not Meta's official WhatsApp API. For public or commercial production use, Meta's WhatsApp Business Cloud API is safer.
+It is useful for developers searching for a free WhatsApp API, WhatsApp Web automation API, WhatsApp API PHP project, Baileys WhatsApp API starter, open-source WhatsApp API dashboard, WhatsApp message API, or WhatsApp webhook API.
 
-## GitHub Repository Description
+Important: this project uses WhatsApp Web linked-device automation through Baileys. It is not Meta's official WhatsApp API. For large commercial production use, compare this project with Meta's official WhatsApp Business Cloud API.
 
+## Repository Metadata
+
+Recommended GitHub description:
+
+```text
 Free open-source WhatsApp Web automation API with PHP, MySQL, Node.js, Baileys, message queue, contacts, webhooks, and dashboard.
+```
 
-## GitHub Topics
+Recommended GitHub topics:
 
-`whatsapp-api` `whatsapp-web` `whatsapp-automation` `whatsapp-web-automation` `baileys` `baileys-whatsapp` `php` `mysql` `nodejs` `webhooks` `message-queue` `open-source`
+```text
+whatsapp-api, whatsapp-web, whatsapp-automation, whatsapp-web-automation, baileys, baileys-whatsapp, php, mysql, nodejs, webhooks, message-queue, open-source
+```
 
-## Search Keywords
-
-free WhatsApp API, WhatsApp Web automation API, WhatsApp API PHP, Baileys WhatsApp API, open source WhatsApp API, WhatsApp message API, WhatsApp webhook API, WhatsApp API dashboard, WhatsApp linked device API, Node.js WhatsApp worker, PHP MySQL WhatsApp API
-
-## Core Features
+## Highlights
 
 - Free WhatsApp API endpoint for queued message sending.
 - WhatsApp Web automation through Baileys linked-device sessions.
 - PHP and MySQL dashboard for API keys, contacts, campaigns, queue, and logs.
 - Node.js WhatsApp worker for background message processing.
 - Webhook callbacks for sent and failed message events.
-- API key authentication, rate limits, IP allowlists, login throttling, and safe session storage.
+- API key authentication, per-key rate limits, and optional IP allowlists.
+- Login throttling, webhook URL validation, and safer session storage outside the web root.
 - Local XAMPP setup for fast testing and open-source development.
+
+## Use Cases
+
+- Build a local WhatsApp Web automation dashboard.
+- Prototype a WhatsApp message API for internal tools.
+- Test a Baileys WhatsApp API workflow with a queue and webhooks.
+- Manage contacts, opted-in recipients, and simple campaigns.
+- Learn how PHP, MySQL, and Node.js can work together for background message delivery.
+
+## Tech Stack
+
+| Layer | Technology |
+| --- | --- |
+| Dashboard | PHP, HTML, CSS, JavaScript |
+| Database | MySQL |
+| Worker | Node.js, Express |
+| WhatsApp Web library | Baileys |
+| Local environment | XAMPP |
 
 ## 1. Database
 
@@ -37,9 +64,7 @@ Start MySQL in XAMPP, then run:
 & "C:\xampp\mysql\bin\mysql.exe" -u root -e "source C:/xampp/htdocs/whatsapp-api/upgrade.sql"
 ```
 
-The default config uses MySQL user `root` with no password. Change `config/app.php` and the worker environment if your XAMPP MySQL credentials are different.
-
-For production, create a least-privilege database user instead of using `root`:
+The default local config uses MySQL user `root` with no password. For production, create a least-privilege database user instead:
 
 ```sql
 CREATE USER 'whatsapp_api_app'@'127.0.0.1' IDENTIFIED BY 'change-this-db-password';
@@ -132,7 +157,7 @@ Response:
 
 Use full international numbers, or 10-digit Indian numbers. By default, 10-digit Indian numbers are sent as `91xxxxxxxxxx`.
 
-## 6. Security Notes
+## Security Notes
 
 - `.htaccess` denies direct access to `config`, `src`, `worker`, `.env`, SQL, log, and package files.
 - `public/test-page.php` is available only to authenticated local development requests and is disabled when `ENABLE_TEST_PAGE=false`.
@@ -140,16 +165,24 @@ Use full international numbers, or 10-digit Indian numbers. By default, 10-digit
 - Login attempts are throttled by email and IP. Re-run `upgrade.sql` after pulling these changes.
 - Webhook delivery attempts are recorded in `webhook_deliveries`.
 
-## 7. Features Added
+## FAQ
 
-- Multiple API keys per user.
-- Enable, disable, delete API keys.
-- Per-key rate limits by minute, hour, and day.
-- Optional IP allowlist per API key.
-- Message queue with `queued`, `processing`, `sent`, `failed`, and `cancelled` states.
-- Worker retries failed queue items.
-- WhatsApp number validation before sending.
-- Dashboard quick queue test.
-- Contacts storage with opt-in flag.
-- Webhook callback on sent/failed messages.
-- API request audit logs.
+### Is this a free WhatsApp API?
+
+It is a free open-source WhatsApp Web automation API starter. It runs locally or on your own server and sends messages through a linked WhatsApp Web device using Baileys.
+
+### Is this the official WhatsApp Business API?
+
+No. This is a WhatsApp Web automation project. The official production API from Meta is WhatsApp Business Cloud API.
+
+### Can I use this as a PHP WhatsApp API?
+
+Yes. The dashboard and public send endpoint are PHP-based, while the background sender is a Node.js worker.
+
+### Does it support webhooks?
+
+Yes. The worker can send webhook callbacks for sent and failed message events.
+
+### Does it include rate limits?
+
+Yes. API keys support per-minute, per-hour, and per-day limits, plus optional IP allowlists.

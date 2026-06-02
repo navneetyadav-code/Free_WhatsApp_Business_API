@@ -1,6 +1,10 @@
-# GitHub Repo SEO Setup
+# GitHub Repo SEO Guide
 
-This repository targets developer searches such as:
+This file documents the repository discoverability strategy for GitHub search and external search engines.
+
+## Primary Search Intent
+
+The repository is positioned for developers who search for:
 
 - free WhatsApp API
 - WhatsApp Web automation API
@@ -9,21 +13,55 @@ This repository targets developer searches such as:
 - open source WhatsApp API
 - WhatsApp message API
 - WhatsApp webhook API
+- PHP MySQL WhatsApp API dashboard
 
-## GitHub Checklist
+## Recommended GitHub Metadata
 
-1. Repository name: `whatsapp-web-automation`.
-2. Repository description: `Free open-source WhatsApp Web automation API with PHP, MySQL, Node.js, Baileys, message queue, contacts, webhooks, and dashboard.`
-3. GitHub topics: `whatsapp-api`, `whatsapp-web`, `whatsapp-automation`, `whatsapp-web-automation`, `baileys`, `baileys-whatsapp`, `php`, `mysql`, `nodejs`, `webhooks`, `message-queue`, `open-source`.
-4. README title should include `WhatsApp Web Automation` and `Free WhatsApp API`.
-5. README first paragraph should include the main stack: PHP, MySQL, Node.js, Baileys.
-6. Add releases with names such as `Free WhatsApp API Dashboard v1.0`.
-7. Keep `LICENSE`, `SECURITY.md`, and `CONTRIBUTING.md` in the root so GitHub shows trustworthy repo signals.
+Repository name:
 
-## Suggested Repo Title
+```text
+whatsapp-web-automation
+```
 
-WhatsApp Web Automation - Free WhatsApp API Dashboard
+Repository description:
 
-## Suggested Repo Description
+```text
+Free open-source WhatsApp Web automation API with PHP, MySQL, Node.js, Baileys, message queue, contacts, webhooks, and dashboard.
+```
 
-Free open-source WhatsApp Web automation API with PHP, MySQL, Node.js, Baileys, API keys, message queue, contacts, webhooks, and dashboard.
+Repository topics:
+
+```text
+whatsapp-api
+whatsapp-web
+whatsapp-automation
+whatsapp-web-automation
+baileys
+baileys-whatsapp
+php
+mysql
+nodejs
+webhooks
+message-queue
+open-source
+```
+
+## Professional SEO Rules
+
+- Put the main phrase in the README title: `WhatsApp Web Automation - Free WhatsApp API Dashboard`.
+- Use natural phrasing instead of repeating the same keyword in every sentence.
+- Keep the first paragraph focused on value, stack, and use case.
+- Include GitHub topics in the README for visibility even when topics are not configured.
+- Use trust signals: `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`, clear setup steps, and security notes.
+- Include a short FAQ because search engines often surface direct answers.
+- Be transparent that this is Baileys/WhatsApp Web automation, not the official Meta API.
+
+## Suggested Release Titles
+
+- `Free WhatsApp API Dashboard v1.0`
+- `WhatsApp Web Automation API Starter`
+- `Baileys WhatsApp API Dashboard Release`
+
+## Suggested Social Preview Text
+
+Free open-source WhatsApp Web automation API dashboard with PHP, MySQL, Node.js, Baileys, queue, webhooks, and contacts.
