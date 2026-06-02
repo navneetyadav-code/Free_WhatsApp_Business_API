@@ -1,0 +1,11 @@
+Options -Indexes
+
+<IfModule mod_authz_core.c>
+    <FilesMatch "^(\.env|.*\.sql|.*\.log|package(-lock)?\.json)$">
+        Require all denied
+    </FilesMatch>
+</IfModule>
+
+<IfModule mod_alias.c>
+    RedirectMatch 404 "^/whatsapp-api/(config|src|worker)(/|$)"
+</IfModule>

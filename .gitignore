@@ -1,0 +1,5 @@
+/.env
+worker/node_modules/
+worker/sessions/
+worker/*.log
+*.log
