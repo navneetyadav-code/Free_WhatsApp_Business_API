@@ -1,8 +1,32 @@
-# WhatsApp API Hub
+# WhatsApp Web Automation - Free WhatsApp API Dashboard
 
-Local XAMPP app for user accounts, WhatsApp Web linked-device QR, API keys, queued message sending, rate limits, contacts, logs, and webhook callbacks.
+Free open-source WhatsApp Web automation API dashboard built with PHP, MySQL, Node.js, and Baileys. This repository helps developers build a local WhatsApp API system with linked-device QR login, API keys, queued message sending, rate limits, contacts, message logs, campaign tools, and webhook callbacks.
+
+Use this repo if you are looking for a free WhatsApp API, WhatsApp Web automation, WhatsApp API PHP project, Baileys WhatsApp API starter, open-source WhatsApp API dashboard, WhatsApp message API, WhatsApp webhook API, or a self-hosted WhatsApp automation panel.
 
 Important: this uses WhatsApp Web linked-device automation through Baileys. It is not Meta's official WhatsApp API. For public or commercial production use, Meta's WhatsApp Business Cloud API is safer.
+
+## GitHub Repository Description
+
+Free open-source WhatsApp Web automation API with PHP, MySQL, Node.js, Baileys, message queue, contacts, webhooks, and dashboard.
+
+## GitHub Topics
+
+`whatsapp-api` `whatsapp-web` `whatsapp-automation` `whatsapp-web-automation` `baileys` `baileys-whatsapp` `php` `mysql` `nodejs` `webhooks` `message-queue` `open-source`
+
+## Search Keywords
+
+free WhatsApp API, WhatsApp Web automation API, WhatsApp API PHP, Baileys WhatsApp API, open source WhatsApp API, WhatsApp message API, WhatsApp webhook API, WhatsApp API dashboard, WhatsApp linked device API, Node.js WhatsApp worker, PHP MySQL WhatsApp API
+
+## Core Features
+
+- Free WhatsApp API endpoint for queued message sending.
+- WhatsApp Web automation through Baileys linked-device sessions.
+- PHP and MySQL dashboard for API keys, contacts, campaigns, queue, and logs.
+- Node.js WhatsApp worker for background message processing.
+- Webhook callbacks for sent and failed message events.
+- API key authentication, rate limits, IP allowlists, login throttling, and safe session storage.
+- Local XAMPP setup for fast testing and open-source development.
 
 ## 1. Database
 
