@@ -32,6 +32,16 @@ function redirect_to(string $path): never
     exit;
 }
 
+function normalize_phone(string $phone): string {
+    $phone = trim($phone);
+    // If the user submits just 10 digits (without JS), assume default country
+    $defaultCountryPrefix = config_env('DEFAULT_COUNTRY_CODE', 'in') === 'in' ? '+91' : '';
+    if ($defaultCountryPrefix && preg_match('/^[0-9]{10}$/', $phone)) {
+        return $defaultCountryPrefix . $phone;
+    }
+    return $phone;
+}
+
 function e(?string $value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
@@ -143,4 +153,88 @@ function validate_webhook_url(?string $url): ?string
     }
 
     return $url;
+}
+
+function seo_meta(?string $page): array {
+    $baseUrl = rtrim(app_config('app.public_url'), '/');
+    $defaults = [
+        'title' => 'WhatsApp API Hub',
+        'description' => 'A robust WhatsApp API Hub for managing messages, campaigns, and API integrations.',
+        'keywords' => 'whatsapp, api, hub, messaging, campaigns',
+        'canonical' => $baseUrl . '/index.php?page=' . $page,
+        'type' => 'website',
+        'robots' => 'index, follow'
+    ];
+
+    switch ($page) {
+        case 'dashboard':
+            $defaults['title'] = 'Dashboard | WhatsApp API Hub';
+            break;
+        case 'login':
+            $defaults['title'] = 'Login | WhatsApp API Hub';
+            break;
+        case 'register':
+            $defaults['title'] = 'Register | WhatsApp API Hub';
+            break;
+        case 'docs':
+            $defaults['title'] = 'Documentation | WhatsApp API Hub';
+            break;
+    }
+
+    return $defaults;
+}
+
+function send_smtp_email(string $to, string $subject, string $body): void {
+    $host = app_config('smtp.host');
+    $port = app_config('smtp.port') ?: 587;
+    $user = app_config('smtp.user');
+    $pass = app_config('smtp.pass');
+    $from = app_config('smtp.from');
+    $fromName = app_config('smtp.from_name');
+
+    if (!$host) return;
+
+    $socket = fsockopen($host, $port, $errno, $errstr, 10);
+    if (!$socket) return;
+    
+    stream_set_timeout($socket, 10);
+    fread($socket, 1024); // read greeting
+
+    fwrite($socket, "EHLO localhost\r\n");
+    fread($socket, 1024);
+
+    if ($port == 587) {
+        fwrite($socket, "STARTTLS\r\n");
+        fread($socket, 1024);
+        stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
+        fwrite($socket, "EHLO localhost\r\n");
+        fread($socket, 1024);
+    }
+
+    if ($user && $pass) {
+        fwrite($socket, "AUTH LOGIN\r\n");
+        fread($socket, 1024);
+        fwrite($socket, base64_encode($user) . "\r\n");
+        fread($socket, 1024);
+        fwrite($socket, base64_encode($pass) . "\r\n");
+        fread($socket, 1024);
+    }
+
+    fwrite($socket, "MAIL FROM: <$from>\r\n");
+    fread($socket, 1024);
+    fwrite($socket, "RCPT TO: <$to>\r\n");
+    fread($socket, 1024);
+    fwrite($socket, "DATA\r\n");
+    fread($socket, 1024);
+
+    $headers = "From: $fromName <$from>\r\n";
+    $headers .= "To: $to\r\n";
+    $headers .= "Subject: $subject\r\n";
+    $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
+    $headers .= "\r\n";
+
+    fwrite($socket, $headers . $body . "\r\n.\r\n");
+    fread($socket, 1024);
+    fwrite($socket, "QUIT\r\n");
+    fclose($socket);
 }

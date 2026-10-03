@@ -1,12 +1,13 @@
 <?php
 
 declare(strict_types=1);
+if (function_exists('opcache_reset')) { opcache_reset(); }
 
 require_once dirname(__DIR__) . '/src/bootstrap.php';
 
 $page = $_GET['page'] ?? 'dashboard';
-$publicPages = ['login', 'register', 'docs'];
-$dashboardPages = ['dashboard', 'device', 'api-keys', 'queue', 'contacts', 'webhooks', 'campaigns'];
+$publicPages = ['login', 'register', 'docs', 'forgot-password', 'google-auth'];
+$dashboardPages = ['dashboard', 'device', 'api-keys', 'queue', 'contacts', 'webhooks', 'campaigns', 'audit', 'chatbot'];
 
 if ($page === 'logout' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
@@ -51,6 +52,107 @@ if ($page === 'message-retry' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     retry_message((int) $user['id'], (int) ($_POST['id'] ?? 0));
     redirect_to('index.php?page=queue');
+}
+
+if ($page === 'message-send' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $user = require_auth();
+    verify_csrf();
+
+    $type = $_POST['recipient_mode'] ?? 'number';
+    $message = trim((string) ($_POST['message'] ?? ''));
+    $isAjax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+    
+    if ($message === '') {
+        if ($isAjax) {
+            json_response(['ok' => false, 'error' => 'Message is required.'], 400);
+        }
+        flash('error', 'Message is required.');
+        redirect_to('index.php?page=message');
+    }
+
+    // Media upload logic
+    $payload = [];
+    if (isset($_FILES['attachment'])) {
+        if ($_FILES['attachment']['error'] === UPLOAD_ERR_OK) {
+            $uploadDir = dirname(__DIR__) . '/public/uploads/';
+            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+            
+            $ext = strtolower(pathinfo($_FILES['attachment']['name'], PATHINFO_EXTENSION));
+            $fileName = uniqid('media_') . '.' . $ext;
+            $target = $uploadDir . $fileName;
+            
+            if (move_uploaded_file($_FILES['attachment']['tmp_name'], $target)) {
+                $payload['attachment'] = [
+                    'path' => $target,
+                    'name' => $_FILES['attachment']['name'],
+                    'type' => in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'webp']) ? 'image' : (in_array($ext, ['mp4', 'mov']) ? 'video' : 'document'),
+                    'mime' => $_FILES['attachment']['type']
+                ];
+            } else {
+                if ($isAjax) { json_response(['ok' => false, 'error' => 'Failed to save uploaded file to disk.'], 500); }
+                flash('error', 'Failed to save uploaded file.');
+                redirect_to('index.php?page=message');
+            }
+        } elseif ($_FILES['attachment']['error'] !== UPLOAD_ERR_NO_FILE) {
+            $uploadErrors = [
+                UPLOAD_ERR_INI_SIZE => 'The uploaded file exceeds the upload_max_filesize directive in php.ini (Default is usually 2MB).',
+                UPLOAD_ERR_FORM_SIZE => 'The uploaded file exceeds the MAX_FILE_SIZE directive in the HTML form.',
+                UPLOAD_ERR_PARTIAL => 'The uploaded file was only partially uploaded.',
+                UPLOAD_ERR_NO_TMP_DIR => 'Missing a temporary folder.',
+                UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk.',
+                UPLOAD_ERR_EXTENSION => 'A PHP extension stopped the file upload.'
+            ];
+            $errMsg = $uploadErrors[$_FILES['attachment']['error']] ?? 'Unknown upload error.';
+            if ($isAjax) { json_response(['ok' => false, 'error' => $errMsg], 400); }
+            flash('error', $errMsg);
+            redirect_to('index.php?page=message');
+        }
+    }
+
+    if (!empty($_POST['humanize'])) {
+        $payload['humanize'] = true;
+    }
+
+    try {
+        $queuedCount = 0;
+        if ($type === 'number') {
+            $phone = trim((string) ($_POST['manual_number'] ?? ''));
+            if (!$phone) throw new Exception('Phone number required');
+            enqueue_message((int) $user['id'], null, $phone, $message, $payload);
+            $queuedCount = 1;
+        } elseif ($type === 'contact') {
+            $contactId = (int) ($_POST['contact_id'] ?? 0);
+            $stmt = Database::pdo()->prepare('SELECT * FROM contacts WHERE id = ? AND user_id = ?');
+            $stmt->execute([$contactId, $user['id']]);
+            $contact = $stmt->fetch();
+            if (!$contact) throw new Exception('Contact not found');
+            
+            $formattedMsg = apply_contact_template($message, $contact);
+            enqueue_message((int) $user['id'], null, $contact['phone'], $formattedMsg, $payload);
+            $queuedCount = 1;
+        } elseif ($type === 'campaign') {
+            $campaignId = (int) ($_POST['campaign_id'] ?? 0);
+            $contacts = campaign_contacts((int) $user['id'], $campaignId);
+            foreach ($contacts as $contact) {
+                $formattedMsg = apply_contact_template($message, $contact);
+                enqueue_message((int) $user['id'], null, $contact['phone'], $formattedMsg, $payload);
+                $queuedCount++;
+            }
+        }
+        
+        if ($isAjax) {
+            json_response(['ok' => true, 'message' => "Successfully queued $queuedCount message(s)."]);
+        }
+        flash('success', "Successfully queued $queuedCount message(s).");
+        redirect_to('index.php?page=queue');
+        
+    } catch (Exception $e) {
+        if ($isAjax) {
+            json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        flash('error', $e->getMessage());
+        redirect_to('index.php?page=message');
+    }
 }
 
 if ($page === 'message-cancel' && $_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -166,6 +268,59 @@ if ($page === 'campaign-create' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     redirect_to('index.php?page=campaigns');
 }
 
+if ($page === 'chatbot-create' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $user = require_auth();
+    verify_csrf();
+    
+    $keyword = trim((string) ($_POST['keyword'] ?? ''));
+    $matchType = $_POST['match_type'] ?? 'exact';
+    $replyText = trim((string) ($_POST['reply_text'] ?? ''));
+    
+    if (!in_array($matchType, ['exact', 'contains', 'starts_with', 'catch_all'])) {
+        $matchType = 'exact';
+    }
+    
+    if ($matchType !== 'catch_all' && $keyword === '') {
+        flash('error', 'Keyword is required unless match type is catch_all.');
+        redirect_to('index.php?page=chatbot');
+    }
+    if ($replyText === '') {
+        flash('error', 'Reply text cannot be empty.');
+        redirect_to('index.php?page=chatbot');
+    }
+
+    $stmt = Database::pdo()->prepare(
+        'INSERT INTO chatbot_rules (user_id, keyword, match_type, reply_text) VALUES (?, ?, ?, ?)'
+    );
+    $stmt->execute([(int) $user['id'], $keyword, $matchType, $replyText]);
+    
+    flash('success', 'Chatbot automation rule created successfully.');
+    redirect_to('index.php?page=chatbot');
+}
+
+if ($page === 'chatbot-status' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $user = require_auth();
+    verify_csrf();
+    $id = (int) ($_POST['id'] ?? 0);
+    $status = ($_POST['status'] ?? 'disabled') === 'active' ? 'active' : 'disabled';
+    
+    $stmt = Database::pdo()->prepare('UPDATE chatbot_rules SET status = ? WHERE id = ? AND user_id = ?');
+    $stmt->execute([$status, $id, (int) $user['id']]);
+    redirect_to('index.php?page=chatbot');
+}
+
+if ($page === 'chatbot-delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $user = require_auth();
+    verify_csrf();
+    $id = (int) ($_POST['id'] ?? 0);
+    
+    $stmt = Database::pdo()->prepare('DELETE FROM chatbot_rules WHERE id = ? AND user_id = ?');
+    $stmt->execute([$id, (int) $user['id']]);
+    
+    flash('success', 'Chatbot rule deleted.');
+    redirect_to('index.php?page=chatbot');
+}
+
 if ($page === 'webhook' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $user = require_auth();
     verify_csrf();
@@ -213,3 +368,4 @@ require $view;
 $content = ob_get_clean();
 
 require dirname(__DIR__) . '/src/pages/layout.php';
+

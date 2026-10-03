@@ -33,7 +33,7 @@ function regenerate_api_credentials(int $userId): array
 function list_api_keys(int $userId): array
 {
     $stmt = Database::pdo()->prepare(
-        'SELECT id, name, key_prefix, status, ip_allowlist, rate_per_minute, rate_per_hour, rate_per_day, last_used_at, created_at
+        'SELECT id, name, key_prefix, status, ip_allowlist, rate_per_minute, rate_per_hour, rate_per_day, last_used_at, created_at, allow_humanize
          FROM api_keys WHERE user_id = ? ORDER BY id DESC'
     );
     $stmt->execute([$userId]);
@@ -62,11 +62,12 @@ function update_api_key_limits(int $userId, int $keyId, array $data): void
     $hour = max($minute, min(5000, (int) ($data['rate_per_hour'] ?? 300)));
     $day = max($hour, min(50000, (int) ($data['rate_per_day'] ?? 1000)));
     $allowlist = trim((string) ($data['ip_allowlist'] ?? ''));
+    $allowHumanize = empty($data['allow_humanize']) ? 0 : 1;
 
     $stmt = Database::pdo()->prepare(
-        'UPDATE api_keys SET rate_per_minute = ?, rate_per_hour = ?, rate_per_day = ?, ip_allowlist = ? WHERE id = ? AND user_id = ?'
+        'UPDATE api_keys SET rate_per_minute = ?, rate_per_hour = ?, rate_per_day = ?, ip_allowlist = ?, allow_humanize = ? WHERE id = ? AND user_id = ?'
     );
-    $stmt->execute([$minute, $hour, $day, $allowlist ?: null, $keyId, $userId]);
+    $stmt->execute([$minute, $hour, $day, $allowlist ?: null, $allowHumanize, $keyId, $userId]);
 }
 
 function authenticate_api_request(): ?array
@@ -75,12 +76,20 @@ function authenticate_api_request(): ?array
     $secret = $_SERVER['HTTP_X_API_SECRET'] ?? '';
     $authorization = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
 
+    // If using Bearer authentication
     if (!$key && str_starts_with($authorization, 'Bearer ')) {
         $token = substr($authorization, 7);
-        [$key, $secret] = array_pad(explode(':', $token, 2), 2, '');
+        if (str_contains($token, ':')) {
+            // Backwards compatibility for key:secret format
+            [$key, $secret] = array_pad(explode(':', $token, 2), 2, '');
+        } else {
+            // Modern Single-Token format (API Key acts as the sole token)
+            $key = $token;
+            $secret = null; // Bypass secret validation
+        }
     }
 
-    if (!is_string($key) || !is_string($secret) || $key === '' || $secret === '') {
+    if (!is_string($key) || $key === '') {
         return null;
     }
 
@@ -93,7 +102,12 @@ function authenticate_api_request(): ?array
     $stmt->execute([hash('sha256', $key)]);
     $apiKey = $stmt->fetch();
 
-    if (!$apiKey || $apiKey['status'] !== 'active' || !password_verify($secret, $apiKey['secret_hash'] ?? '')) {
+    if (!$apiKey || $apiKey['status'] !== 'active') {
+        return null;
+    }
+
+    // Only verify secret if it was explicitly provided (legacy dual-auth method)
+    if ($secret !== null && !password_verify($secret, $apiKey['secret_hash'] ?? '')) {
         return null;
     }
 
@@ -119,5 +133,24 @@ function api_key_ip_allowed(array $apiKey, string $ip): bool
 
 function client_ip(): string
 {
+    $headers = [
+        'HTTP_X_FORWARDED_FOR',
+        'HTTP_CLIENT_IP',
+        'HTTP_X_REAL_IP',
+        'REMOTE_ADDR'
+    ];
+
+    foreach ($headers as $header) {
+        if (!empty($_SERVER[$header])) {
+            // X-Forwarded-For can contain a comma-separated list of IPs. The first one is the client.
+            $ips = explode(',', $_SERVER[$header]);
+            $ip = trim($ips[0]);
+            
+            if (filter_var($ip, FILTER_VALIDATE_IP)) {
+                return $ip;
+            }
+        }
+    }
+
     return (string) ($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0');
 }

@@ -117,6 +117,12 @@ function create_campaign(int $userId, string $name, string $template): int
     $pdo = Database::pdo();
     $contacts = opted_in_contacts($userId);
 
+    return create_campaign_for_contacts($userId, $name, $template, $contacts);
+}
+
+function create_campaign_for_contacts(int $userId, string $name, string $template, array $contacts): int
+{
+    $pdo = Database::pdo();
     $pdo->beginTransaction();
     try {
         $stmt = $pdo->prepare(
@@ -174,9 +180,158 @@ function apply_contact_template(string $template, array $contact): string
 
 function recent_campaigns(int $userId, int $limit = 8): array
 {
+    sync_campaign_statuses($userId);
     $stmt = Database::pdo()->prepare(
         'SELECT * FROM campaigns WHERE user_id = ? ORDER BY id DESC LIMIT ' . max(1, min(50, $limit))
     );
     $stmt->execute([$userId]);
     return $stmt->fetchAll();
+}
+
+function get_campaign(int $userId, int $campaignId): ?array
+{
+    sync_campaign_statuses($userId);
+    $stmt = Database::pdo()->prepare(
+        'SELECT * FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1'
+    );
+    $stmt->execute([$campaignId, $userId]);
+    $campaign = $stmt->fetch();
+
+    return $campaign ?: null;
+}
+
+function update_campaign(int $userId, int $campaignId, string $name, string $template): void
+{
+    $stmt = Database::pdo()->prepare(
+        'UPDATE campaigns SET name = ?, message_template = ? WHERE id = ? AND user_id = ?'
+    );
+    $stmt->execute([trim($name) ?: 'Untitled campaign', $template, $campaignId, $userId]);
+}
+
+function cancel_campaign(int $userId, int $campaignId): void
+{
+    $pdo = Database::pdo();
+    $pdo->beginTransaction();
+
+    try {
+        $stmt = $pdo->prepare(
+            "UPDATE message_queue
+             SET status = 'cancelled'
+             WHERE user_id = ?
+               AND status = 'queued'
+               AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.source')) = 'campaign'
+               AND JSON_EXTRACT(payload, '$.campaign_id') = ?"
+        );
+        $stmt->execute([$userId, $campaignId]);
+
+        $status = $stmt->rowCount() > 0 ? 'cancelled' : 'completed';
+        $pdo->prepare('UPDATE campaigns SET status = ? WHERE id = ? AND user_id = ?')
+            ->execute([$status, $campaignId, $userId]);
+
+        $pdo->commit();
+    } catch (Throwable $exception) {
+        $pdo->rollBack();
+        throw $exception;
+    }
+}
+
+function campaign_contacts(int $userId, int $campaignId): array
+{
+    $stmt = Database::pdo()->prepare(
+        "SELECT DISTINCT contacts.*
+         FROM message_queue
+         INNER JOIN contacts
+             ON contacts.id = JSON_UNQUOTE(JSON_EXTRACT(message_queue.payload, '$.contact_id'))
+            AND contacts.user_id = message_queue.user_id
+         WHERE message_queue.user_id = ?
+           AND JSON_UNQUOTE(JSON_EXTRACT(message_queue.payload, '$.source')) = 'campaign'
+           AND JSON_EXTRACT(message_queue.payload, '$.campaign_id') = ?
+         ORDER BY contacts.name ASC, contacts.id ASC"
+    );
+    $stmt->execute([$userId, $campaignId]);
+    return $stmt->fetchAll();
+}
+
+function resend_campaign(int $userId, int $campaignId): ?int
+{
+    $campaign = get_campaign($userId, $campaignId);
+    if (!$campaign) {
+        return null;
+    }
+
+    $contacts = campaign_contacts($userId, $campaignId);
+    if (!$contacts) {
+        $contacts = opted_in_contacts($userId);
+    }
+
+    return create_campaign_for_contacts(
+        $userId,
+        trim((string) $campaign['name']) . ' (Resend)',
+        (string) $campaign['message_template'],
+        $contacts
+    );
+}
+
+function sync_campaign_statuses(int $userId): void
+{
+    $pdo = Database::pdo();
+    $stmt = $pdo->prepare(
+        "SELECT campaigns.id,
+                campaigns.status AS campaign_status,
+                COUNT(message_queue.id) AS total_messages,
+                SUM(message_queue.status IN ('queued', 'processing')) AS active_messages,
+                SUM(message_queue.status = 'cancelled') AS cancelled_messages
+         FROM campaigns
+         LEFT JOIN message_queue
+            ON message_queue.user_id = campaigns.user_id
+           AND JSON_UNQUOTE(JSON_EXTRACT(message_queue.payload, '$.source')) = 'campaign'
+           AND JSON_EXTRACT(message_queue.payload, '$.campaign_id') = campaigns.id
+         WHERE campaigns.user_id = ?
+         GROUP BY campaigns.id, campaigns.status"
+    );
+    $stmt->execute([$userId]);
+
+    $update = $pdo->prepare('UPDATE campaigns SET status = ? WHERE id = ? AND user_id = ?');
+    foreach ($stmt->fetchAll() as $row) {
+        $totalMessages = (int) ($row['total_messages'] ?? 0);
+        $activeMessages = (int) ($row['active_messages'] ?? 0);
+        $cancelledMessages = (int) ($row['cancelled_messages'] ?? 0);
+        $currentStatus = (string) ($row['campaign_status'] ?? 'queued');
+
+        if ($activeMessages > 0) {
+            $nextStatus = 'queued';
+        } elseif ($totalMessages > 0 && $cancelledMessages === $totalMessages) {
+            $nextStatus = 'cancelled';
+        } elseif ($totalMessages > 0) {
+            $nextStatus = 'completed';
+        } else {
+            $nextStatus = $currentStatus;
+        }
+
+        if ($nextStatus !== $currentStatus) {
+            $update->execute([$nextStatus, (int) $row['id'], $userId]);
+        }
+    }
+}
+
+function paginate_messages(int $userId, int $page = 1, int $perPage = 25): array
+{
+    $offset = max(0, ($page - 1) * $perPage);
+    $stmt = Database::pdo()->prepare(
+        'SELECT message_queue.*, api_keys.key_prefix
+         FROM message_queue
+         LEFT JOIN api_keys ON api_keys.id = message_queue.api_key_id
+         WHERE message_queue.user_id = ?
+         ORDER BY message_queue.id DESC
+         LIMIT ' . (int) $perPage . ' OFFSET ' . (int) $offset
+    );
+    $stmt->execute([$userId]);
+    return $stmt->fetchAll();
+}
+
+function count_messages(int $userId): int
+{
+    $stmt = Database::pdo()->prepare('SELECT COUNT(*) FROM message_queue WHERE user_id = ?');
+    $stmt->execute([$userId]);
+    return (int) $stmt->fetchColumn();
 }

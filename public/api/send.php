@@ -33,10 +33,14 @@ if ($to === '' || $message === '') {
     json_response(['ok' => false, 'error' => 'Fields "to" and "message" are required.', 'request_id' => $requestId], 422);
 }
 
-$messageId = enqueue_message((int) $user['user_id'], (int) $user['id'], $to, $message, [
+$payload = [
     'source' => 'api',
     'type' => 'text',
-]);
+];
+if (!empty($data['humanize']) || !empty($user['allow_humanize'])) {
+    $payload['humanize'] = true;
+}
+$messageId = enqueue_message((int) $user['user_id'], (int) $user['id'], $to, $message, $payload);
 $requestId = log_api_request((int) $user['user_id'], (int) $user['id'], 'send', 202);
 
 json_response([

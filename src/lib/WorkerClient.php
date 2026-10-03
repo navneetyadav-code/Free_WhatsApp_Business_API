@@ -48,19 +48,44 @@ function sync_session_status(int $userId, array $workerStatus): void
         $state = 'error';
     }
 
-    $stmt = Database::pdo()->prepare(
-        'UPDATE whatsapp_sessions
-         SET status = ?, phone = ?, push_name = ?, qr_updated_at = ?, connected_at = ?, disconnected_at = ?, last_error = ?
-         WHERE user_id = ?'
-    );
-    $stmt->execute([
-        $state,
-        $workerStatus['phone'] ?? null,
-        $workerStatus['pushName'] ?? null,
-        !empty($workerStatus['hasQr']) ? date('Y-m-d H:i:s') : null,
-        $state === 'connected' ? date('Y-m-d H:i:s') : null,
-        in_array($state, ['disconnected', 'error'], true) ? date('Y-m-d H:i:s') : null,
-        $workerStatus['error'] ?? null,
-        $userId,
-    ]);
+    $sleeping = !empty($workerStatus['sleeping']) ? 1 : 0;
+
+    try {
+        $stmt = Database::pdo()->prepare(
+            'UPDATE whatsapp_sessions
+             SET status = ?, sleeping = ?, phone = ?, push_name = ?, qr_updated_at = ?, connected_at = ?, disconnected_at = ?, last_error = ?
+             WHERE user_id = ?'
+        );
+        $stmt->execute([
+            $state,
+            $sleeping,
+            $workerStatus['phone'] ?? null,
+            $workerStatus['pushName'] ?? null,
+            !empty($workerStatus['hasQr']) ? date('Y-m-d H:i:s') : null,
+            $state === 'connected' ? date('Y-m-d H:i:s') : null,
+            in_array($state, ['disconnected', 'error'], true) ? date('Y-m-d H:i:s') : null,
+            $workerStatus['error'] ?? null,
+            $userId,
+        ]);
+    } catch (PDOException $exception) {
+        if ((string) $exception->getCode() !== '42S22') {
+            throw $exception;
+        }
+
+        $stmt = Database::pdo()->prepare(
+            'UPDATE whatsapp_sessions
+             SET status = ?, phone = ?, push_name = ?, qr_updated_at = ?, connected_at = ?, disconnected_at = ?, last_error = ?
+             WHERE user_id = ?'
+        );
+        $stmt->execute([
+            $state,
+            $workerStatus['phone'] ?? null,
+            $workerStatus['pushName'] ?? null,
+            !empty($workerStatus['hasQr']) ? date('Y-m-d H:i:s') : null,
+            $state === 'connected' ? date('Y-m-d H:i:s') : null,
+            in_array($state, ['disconnected', 'error'], true) ? date('Y-m-d H:i:s') : null,
+            $workerStatus['error'] ?? null,
+            $userId,
+        ]);
+    }
 }

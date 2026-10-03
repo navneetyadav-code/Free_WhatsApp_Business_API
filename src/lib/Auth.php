@@ -86,30 +86,29 @@ function clear_failed_logins(string $email): void
     }
 }
 
-function register_user(string $name, string $email, string $password): array
+function register_user(string $name, string $email, string $phone, string $password): array
 {
     $pdo = Database::pdo();
     $pdo->beginTransaction();
 
     try {
-        $stmt = $pdo->prepare('INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)');
+        $stmt = $pdo->prepare('INSERT INTO users (name, email, phone, password_hash) VALUES (?, ?, ?, ?)');
         $stmt->execute([
             trim($name),
             mb_strtolower(trim($email)),
+            trim($phone),
             password_hash($password, PASSWORD_DEFAULT),
         ]);
 
         $userId = (int) $pdo->lastInsertId();
         $pdo->prepare('INSERT INTO whatsapp_sessions (user_id) VALUES (?)')->execute([$userId]);
         $pdo->prepare('INSERT INTO webhooks (user_id) VALUES (?)')->execute([$userId]);
-        $credentials = regenerate_api_credentials($userId);
         $pdo->commit();
 
         session_regenerate_id(true);
         $_SESSION['user_id'] = $userId;
-        $_SESSION['new_api_credentials'] = $credentials;
 
-        return $credentials;
+        return [];
     } catch (Throwable $exception) {
         $pdo->rollBack();
         throw $exception;

@@ -29,6 +29,22 @@ if ($action === 'logout') {
     json_response($response, !empty($response['ok']) ? 200 : 502);
 }
 
+if ($action === 'sleep') {
+    $response = worker_request('POST', "sessions/{$userId}/sleep");
+    if (!empty($response['ok'])) {
+        sync_session_status($userId, $response['session'] ?? ['state' => 'idle']);
+    }
+    json_response($response, !empty($response['ok']) ? 200 : 502);
+}
+
+if ($action === 'wake') {
+    $response = worker_request('POST', "sessions/{$userId}/wake");
+    if (!empty($response['ok'])) {
+        sync_session_status($userId, $response['session'] ?? []);
+    }
+    json_response($response, !empty($response['ok']) ? 200 : 502);
+}
+
 if ($action === 'send-test') {
     $data = request_json();
     $to = trim((string) ($data['to'] ?? ''));

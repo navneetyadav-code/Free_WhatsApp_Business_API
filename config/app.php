@@ -63,10 +63,12 @@ return [
     'app' => [
         'env' => $appEnv,
         'name' => config_env('APP_NAME', 'WhatsApp API Hub'),
+        'public_url' => rtrim((string) config_env('APP_PUBLIC_URL', 'http://localhost/whatsapp-api/public'), '/'),
         'base_path' => config_env('APP_BASE_PATH', '/whatsapp-api/public'),
         'session_name' => config_env('APP_SESSION_NAME', 'wa_api_hub'),
         'secure_cookies' => config_bool('APP_SECURE_COOKIES', $appEnv === 'production'),
         'enable_test_page' => config_bool('ENABLE_TEST_PAGE', $appEnv !== 'production'),
+        'default_country_code' => config_env('DEFAULT_COUNTRY_CODE', 'in'),
     ],
     'security' => [
         'worker_token' => $workerToken,
@@ -75,5 +77,25 @@ return [
     ],
     'worker' => [
         'url' => config_env('WORKER_URL', 'http://127.0.0.1:3107'),
+    ],
+    'otp' => [
+        'via_email' => config_bool('OTP_VIA_EMAIL', true),
+        'via_phone' => config_bool('OTP_VIA_PHONE', true),
+    ],
+    'system_api' => [
+        'key' => config_env('SYSTEM_API_KEY', ''),
+        'secret' => config_env('SYSTEM_API_SECRET', ''),
+    ],
+    'smtp' => [
+        'host' => config_env('SMTP_HOST', ''),
+        'port' => (int) config_env('SMTP_PORT', '587'),
+        'user' => config_env('SMTP_USER', ''),
+        'pass' => config_env('SMTP_PASS', ''),
+        'from' => config_env('SMTP_FROM', 'noreply@localhost'),
+        'from_name' => config_env('SMTP_FROM_NAME', 'WhatsApp API Hub'),
+    ],
+    'google' => [
+        'client_id' => config_env('GOOGLE_CLIENT_ID', ''),
+        'client_secret' => config_env('GOOGLE_CLIENT_SECRET', ''),
     ],
 ];

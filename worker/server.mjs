@@ -5,7 +5,7 @@ import mysql from 'mysql2/promise';
 import crypto from 'crypto';
 import dns from 'dns/promises';
 import net from 'net';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, statSync } from 'fs';
 import { rm } from 'fs/promises';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -27,6 +27,13 @@ const SEND_DELAY_MS = Number(process.env.SEND_DELAY_MS || 2500);
 const QUEUE_POLL_MS = Number(process.env.QUEUE_POLL_MS || 3000);
 const SESSION_DIR = resolve(process.env.WA_SESSION_DIR || join(__dirname, '..', '..', '..', 'whatsapp-api-data', 'sessions'));
 const sessions = new Map();
+let supportsSleepingColumn = true;
+
+function isMissingSleepingColumnError(error) {
+  return error?.code === 'ER_BAD_FIELD_ERROR'
+    && typeof error?.sqlMessage === 'string'
+    && error.sqlMessage.includes('sleeping');
+}
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
 if (APP_ENV === 'production' && WORKER_TOKEN === 'change-this-worker-token-before-production') {
@@ -92,6 +99,7 @@ function emptySession(userId) {
   return {
     userId,
     state: 'idle',
+    sleeping: false,
     qr: null,
     hasQr: false,
     phone: null,
@@ -106,16 +114,275 @@ function publicSession(session) {
   return {
     userId: session.userId,
     state: session.state,
+    sleeping: Boolean(session.sleeping),
     qr: session.qr,
     hasQr: Boolean(session.qr),
     phone: session.phone,
     pushName: session.pushName,
+      profilePicture: session.profilePicture,
     error: session.error
   };
 }
 
+function zonedParts(date, timeZone) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  });
+
+  const parts = {};
+  for (const part of formatter.formatToParts(date)) {
+    if (part.type !== 'literal') {
+      parts[part.type] = Number(part.value);
+    }
+  }
+
+  return {
+    year: parts.year,
+    month: parts.month,
+    day: parts.day,
+    hour: parts.hour,
+    minute: parts.minute,
+    second: parts.second
+  };
+}
+
+function zonedTimeToUtc({ year, month, day, hour, minute, second }, timeZone) {
+  const approx = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  const observed = zonedParts(approx, timeZone);
+  const observedUtc = Date.UTC(
+    observed.year,
+    observed.month - 1,
+    observed.day,
+    observed.hour,
+    observed.minute,
+    observed.second
+  );
+  const targetUtc = Date.UTC(year, month - 1, day, hour, minute, second);
+  return new Date(approx.getTime() + (targetUtc - observedUtc));
+}
+
+function parseEmojiPool(rawValue) {
+  if (!rawValue) {
+    return [];
+  }
+
+  if (Array.isArray(rawValue)) {
+    return rawValue.filter((item) => typeof item === 'string' && item.trim() !== '').map((item) => item.trim());
+  }
+
+  if (typeof rawValue === 'string') {
+    try {
+      const parsed = JSON.parse(rawValue);
+      return parseEmojiPool(parsed);
+    } catch {
+      return rawValue.split(/[\r\n,]+/).map((item) => item.trim()).filter(Boolean);
+    }
+  }
+
+  return [];
+}
+
+function applyBirthdayTemplate(template, context, emojiPool) {
+  const chosenEmoji = emojiPool.length > 0
+    ? Array.from({ length: [3, 4, 5, 6][Math.floor(Math.random() * 4)] }, () => (
+      emojiPool[Math.floor(Math.random() * emojiPool.length)]
+    )).join(' ')
+    : '';
+
+  let message = String(template || '').replace(/\{name\}/g, String(context.name || 'Friend'))
+    .replace(/\{days_left\}/g, String(context.days_left ?? ''))
+    .replace(/\{hours_left\}/g, String(context.hours_left ?? ''))
+    .replace(/\{minutes_left\}/g, String(context.minutes_left ?? ''));
+
+  if (message.includes('{emoji}')) {
+    message = message.replace(/\{emoji\}/g, chosenEmoji);
+  } else if (chosenEmoji) {
+    message = `${message} ${chosenEmoji}`.trim();
+  }
+
+  return message.trim();
+}
+
+function birthdayTargetDate(task, occurrenceYear) {
+  const [hour, minute] = String(task.send_time || '00:00:00').split(':').map((value) => Number(value || 0));
+  return zonedTimeToUtc({
+    year: occurrenceYear,
+    month: Number(task.birthday_month),
+    day: Number(task.birthday_day),
+    hour,
+    minute,
+    second: 0
+  }, String(task.timezone || 'Asia/Kolkata'));
+}
+
+function nextBirthdayOccurrence(task, now = new Date()) {
+  const timeZone = String(task.timezone || 'Asia/Kolkata');
+  const localNow = zonedParts(now, timeZone);
+  let occurrenceYear = localNow.year;
+  let target = birthdayTargetDate(task, occurrenceYear);
+
+  if (target <= now) {
+    occurrenceYear += 1;
+    target = birthdayTargetDate(task, occurrenceYear);
+  }
+
+  return { occurrenceYear, target };
+}
+
+async function queueBirthdayEvent(task, occurrenceYear, eventKey, scheduledAt, messageBody) {
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [result] = await connection.execute(
+      `INSERT IGNORE INTO birthday_task_logs
+       (birthday_task_id, occurrence_year, event_key, scheduled_for)
+       VALUES (?, ?, ?, ?)`,
+      [
+        task.id,
+        occurrenceYear,
+        eventKey,
+        scheduledAt.toISOString().slice(0, 19).replace('T', ' ')
+      ]
+    );
+
+    if (!result.affectedRows) {
+      await connection.rollback();
+      return false;
+    }
+
+    const payload = JSON.stringify({
+      source: 'birthday-task',
+      task_id: Number(task.id),
+      occurrence_year: occurrenceYear,
+      event_key: eventKey,
+      type: 'text'
+    });
+
+    const [messageInsert] = await connection.execute(
+      `INSERT INTO message_queue
+       (user_id, api_key_id, recipient, message_type, body, payload)
+       VALUES (?, NULL, ?, 'text', ?, ?)`,
+      [task.user_id, task.recipient_phone, messageBody, payload]
+    );
+
+    await connection.execute(
+      `UPDATE birthday_task_logs
+       SET queued_message_id = ?
+       WHERE birthday_task_id = ? AND occurrence_year = ? AND event_key = ?`,
+      [messageInsert.insertId, task.id, occurrenceYear, eventKey]
+    );
+
+    await connection.commit();
+    return true;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+async function processBirthdayTask(task, now = new Date()) {
+  const { occurrenceYear, target } = nextBirthdayOccurrence(task, now);
+  const toleranceMs = 65000;
+  const emojiPool = parseEmojiPool(task.emoji_pool);
+  const baseContext = {
+    name: task.recipient_name || 'Friend'
+  };
+  const events = [];
+
+  if (Number(task.countdown_enabled)) {
+    const dayStart = Number(task.countdown_days_start || 0);
+    for (let daysLeft = dayStart; daysLeft >= 1; daysLeft -= 1) {
+      const scheduledAt = new Date(target.getTime() - (daysLeft * 24 * 60 * 60 * 1000));
+      if (scheduledAt <= now && (now.getTime() - scheduledAt.getTime()) <= toleranceMs) {
+        events.push({
+          key: `day-${daysLeft}`,
+          scheduledAt,
+          body: applyBirthdayTemplate(task.day_message_template || '', { ...baseContext, days_left: daysLeft }, emojiPool)
+        });
+      }
+    }
+
+    const hourStart = Number(task.countdown_hours_start || 0);
+    for (let hoursLeft = hourStart; hoursLeft >= 1; hoursLeft -= 1) {
+      const scheduledAt = new Date(target.getTime() - (hoursLeft * 60 * 60 * 1000));
+      if (scheduledAt <= now && (now.getTime() - scheduledAt.getTime()) <= toleranceMs) {
+        events.push({
+          key: `hour-${hoursLeft}`,
+          scheduledAt,
+          body: applyBirthdayTemplate(task.hour_message_template || '', { ...baseContext, hours_left: hoursLeft }, emojiPool)
+        });
+      }
+    }
+
+    const minuteStart = Number(task.countdown_minutes_start || 0);
+    const minuteInterval = Math.max(1, Number(task.minute_interval || 1));
+    for (let minutesLeft = minuteStart; minutesLeft >= 1; minutesLeft -= minuteInterval) {
+      const scheduledAt = new Date(target.getTime() - (minutesLeft * 60 * 1000));
+      if (scheduledAt <= now && (now.getTime() - scheduledAt.getTime()) <= toleranceMs) {
+        events.push({
+          key: `minute-${minutesLeft}`,
+          scheduledAt,
+          body: applyBirthdayTemplate(task.minute_message_template || '', { ...baseContext, minutes_left: minutesLeft }, emojiPool)
+        });
+      }
+    }
+  }
+
+  if (target <= now && (now.getTime() - target.getTime()) <= toleranceMs) {
+    events.push({
+      key: 'final',
+      scheduledAt: target,
+      body: applyBirthdayTemplate(task.final_message_template || '', baseContext, emojiPool)
+    });
+  }
+
+  for (const event of events) {
+    if (!event.body) {
+      continue;
+    }
+    await queueBirthdayEvent(task, occurrenceYear, event.key, event.scheduledAt, event.body);
+  }
+}
+
+async function processBirthdayTasks(now = new Date()) {
+  const [tasks] = await db.execute(
+    `SELECT * FROM birthday_tasks
+     WHERE status = 'active'`
+  );
+
+  for (const task of tasks) {
+    try {
+      await processBirthdayTask(task, now);
+    } catch (error) {
+      logger.warn({ error, taskId: task.id }, 'Birthday task processing failed');
+    }
+  }
+}
+
 async function updateSessionRecord(userId, session) {
   try {
+    if (supportsSleepingColumn) {
+      await db.execute(
+        `UPDATE whatsapp_sessions
+         SET status = ?, sleeping = ?, phone = ?, push_name = ?,
+             connected_at = IF(? = 'connected', NOW(), connected_at),
+             disconnected_at = IF(? IN ('disconnected', 'error', 'idle'), NOW(), disconnected_at),
+             last_error = ?
+         WHERE user_id = ?`,
+        [session.state, Number(Boolean(session.sleeping)), session.phone, session.pushName, session.state, session.state, session.error, userId]
+      );
+      return;
+    }
+
     await db.execute(
       `UPDATE whatsapp_sessions
        SET status = ?, phone = ?, push_name = ?,
@@ -126,6 +393,11 @@ async function updateSessionRecord(userId, session) {
       [session.state, session.phone, session.pushName, session.state, session.state, session.error, userId]
     );
   } catch (error) {
+    if (supportsSleepingColumn && isMissingSleepingColumnError(error)) {
+      supportsSleepingColumn = false;
+      await updateSessionRecord(userId, session);
+      return;
+    }
     logger.warn({ error, userId }, 'Could not update session record');
   }
 }
@@ -141,16 +413,21 @@ function getSession(userId) {
 function normalizeRecipient(value) {
   const raw = String(value || '').trim();
   if (!raw) {
-    return { jid: '', normalizedTo: '', isGroup: false };
+    return { jid: '', normalizedTo: '', isGroup: false, isLid: false };
   }
 
   if (raw.endsWith('@g.us')) {
-    return { jid: raw, normalizedTo: raw, isGroup: true };
+    return { jid: raw, normalizedTo: raw, isGroup: true, isLid: false };
+  }
+
+  if (raw.endsWith('@lid')) {
+    const normalizedTo = raw.replace('@lid', '');
+    return { jid: raw, normalizedTo, isGroup: false, isLid: true };
   }
 
   if (raw.endsWith('@s.whatsapp.net')) {
     const normalizedTo = raw.replace('@s.whatsapp.net', '');
-    return { jid: raw, normalizedTo, isGroup: false };
+    return { jid: raw, normalizedTo, isGroup: false, isLid: false };
   }
 
   let digits = raw.replace(/[^\d]/g, '');
@@ -255,6 +532,7 @@ async function startSession(userId) {
   }
 
   session.state = 'connecting';
+  session.sleeping = false;
   session.error = null;
 
   session.starting = (async () => {
@@ -278,6 +556,27 @@ async function startSession(userId) {
       try {
         const { connection, lastDisconnect, qr } = update;
 
+        if (session.sleeping) {
+          session.qr = null;
+          session.hasQr = false;
+
+          if (connection === 'open' && sock) {
+            session.state = 'idle';
+            session.sock = null;
+            sock.end?.();
+            await updateSessionRecord(userId, session);
+          }
+
+          if (connection === 'close') {
+            session.state = 'idle';
+            session.sock = null;
+            session.error = null;
+            await updateSessionRecord(userId, session);
+          }
+
+          return;
+        }
+
         if (qr) {
           session.qr = await QRCode.toDataURL(qr, { margin: 1, width: 320 });
           session.hasQr = true;
@@ -286,18 +585,20 @@ async function startSession(userId) {
 
         if (connection === 'open') {
           session.state = 'connected';
+          session.sleeping = false;
           session.qr = null;
           session.hasQr = false;
           session.error = null;
           session.phone = sock.user?.id || null;
           session.pushName = sock.user?.name || sock.user?.verifiedName || null;
+          try { session.profilePicture = await sock.profilePictureUrl(sock.user.id, 'image'); } catch(e) { session.profilePicture = null; }
           await updateSessionRecord(userId, session);
         }
 
         if (connection === 'close') {
           const code = lastDisconnect?.error?.output?.statusCode;
-          const shouldReconnect = code !== DisconnectReason.loggedOut;
-          session.state = shouldReconnect ? 'disconnected' : 'idle';
+          const shouldReconnect = code !== DisconnectReason.loggedOut && !session.sleeping;
+          session.state = session.sleeping ? 'idle' : (shouldReconnect ? 'disconnected' : 'idle');
           session.qr = null;
           session.hasQr = false;
           session.sock = null;
@@ -315,6 +616,46 @@ async function startSession(userId) {
         session.error = error.message;
         await updateSessionRecord(userId, session);
         logger.error({ error, userId }, 'Connection update failed');
+      }
+    });
+
+    sock.ev.on('messages.upsert', async (m) => {
+      try {
+        if (m.type !== 'notify') return;
+        for (const msg of m.messages) {
+          if (!msg.message || msg.key.fromMe || msg.key.remoteJid === 'status@broadcast') continue;
+          
+          const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.buttonsResponseMessage?.selectedButtonId || msg.message.listResponseMessage?.title || '';
+          if (!text.trim()) continue;
+
+          const [rules] = await db.execute('SELECT * FROM chatbot_rules WHERE user_id = ? AND status = "active"', [userId]);
+          if (!rules || rules.length === 0) continue;
+
+          let matchedRule = null;
+          const lowerText = text.toLowerCase().trim();
+
+          for (const rule of rules) {
+            if (rule.match_type === 'catch_all') continue;
+            const lowerKeyword = rule.keyword.toLowerCase();
+            if (rule.match_type === 'exact' && lowerText === lowerKeyword) { matchedRule = rule; break; }
+            if (rule.match_type === 'starts_with' && lowerText.startsWith(lowerKeyword)) { matchedRule = rule; break; }
+            if (rule.match_type === 'contains' && lowerText.includes(lowerKeyword)) { matchedRule = rule; break; }
+          }
+
+          if (!matchedRule) {
+            matchedRule = rules.find(r => r.match_type === 'catch_all');
+          }
+
+          if (matchedRule) {
+             const payload = JSON.stringify({ source: 'chatbot', rule_id: matchedRule.id, type: 'text' });
+             await db.execute(
+               `INSERT INTO message_queue (user_id, api_key_id, recipient, message_type, body, payload) VALUES (?, NULL, ?, 'text', ?, ?)`,
+               [userId, msg.key.remoteJid, matchedRule.reply_text, payload]
+             );
+          }
+        }
+      } catch (err) {
+        logger.error({ err, userId }, 'Chatbot rule processing failed');
       }
     });
 
@@ -337,19 +678,48 @@ async function claimNextMessage() {
      WHERE status = 'processing' AND locked_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`
   );
 
-  await db.execute(
-    `UPDATE message_queue
-     SET status = 'processing', locked_at = NOW(), locked_by = ?, attempts = attempts + 1
-     WHERE id = (
-       SELECT id FROM (
-         SELECT id FROM message_queue
-         WHERE status = 'queued' AND available_at <= NOW()
-         ORDER BY id ASC
-         LIMIT 1
-       ) AS next_message
-     )`,
-    [WORKER_ID]
-  );
+  try {
+    if (supportsSleepingColumn) {
+      await db.execute(
+        `UPDATE message_queue
+         SET status = 'processing', locked_at = NOW(), locked_by = ?, attempts = attempts + 1
+         WHERE id = (
+           SELECT id FROM (
+             SELECT message_queue.id
+             FROM message_queue
+             LEFT JOIN whatsapp_sessions
+               ON whatsapp_sessions.user_id = message_queue.user_id
+             WHERE message_queue.status = 'queued'
+               AND message_queue.available_at <= NOW()
+               AND COALESCE(whatsapp_sessions.sleeping, 0) = 0
+             ORDER BY message_queue.id ASC
+             LIMIT 1
+           ) AS next_message
+         )`,
+        [WORKER_ID]
+      );
+    } else {
+      await db.execute(
+        `UPDATE message_queue
+         SET status = 'processing', locked_at = NOW(), locked_by = ?, attempts = attempts + 1
+         WHERE id = (
+           SELECT id FROM (
+             SELECT id FROM message_queue
+             WHERE status = 'queued' AND available_at <= NOW()
+             ORDER BY id ASC
+             LIMIT 1
+           ) AS next_message
+         )`,
+        [WORKER_ID]
+      );
+    }
+  } catch (error) {
+    if (supportsSleepingColumn && isMissingSleepingColumnError(error)) {
+      supportsSleepingColumn = false;
+      return claimNextMessage();
+    }
+    throw error;
+  }
 
   const [rows] = await db.execute(
     `SELECT * FROM message_queue
@@ -360,6 +730,147 @@ async function claimNextMessage() {
   );
 
   return rows[0] || null;
+}
+
+async function releaseMessageToQueue(message) {
+  await db.execute(
+    `UPDATE message_queue
+     SET status = 'queued', locked_at = NULL, locked_by = NULL
+     WHERE id = ?`,
+    [message.id]
+  );
+}
+
+async function sendQueuedMessage(message) {
+  const currentSession = getSession(String(message.user_id));
+  currentSession.lastActivityAt = Date.now();
+
+  if (supportsSleepingColumn) {
+    try {
+      const [sessionRows] = await db.execute(
+        'SELECT sleeping FROM whatsapp_sessions WHERE user_id = ? LIMIT 1',
+        [message.user_id]
+      );
+      if (sessionRows[0] && Number(sessionRows[0].sleeping) === 1) {
+        currentSession.sleeping = true;
+      }
+    } catch (error) {
+      if (isMissingSleepingColumnError(error)) {
+        supportsSleepingColumn = false;
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  if (currentSession.sleeping) {
+    currentSession.wasSleeping = true;
+    currentSession.sleeping = false;
+    await updateSessionRecord(currentSession.userId, currentSession);
+    logger.info('Auto-waking session for user ' + currentSession.userId + ' to process queue.');
+  }
+
+  const session = await startSession(String(message.user_id));
+  await new Promise((resolve) => setTimeout(resolve, SEND_DELAY_MS));
+
+  if (session.sleeping) {
+    await releaseMessageToQueue(message);
+    return;
+  }
+
+  if (session.state !== 'connected' || !session.sock) {
+    throw new Error('WhatsApp device is not connected.');
+  }
+
+  const recipient = normalizeRecipient(message.recipient);
+  if (!recipient.jid) {
+    await markMessageFailed(message, 'Invalid recipient. Use an international number or a 10-digit Indian mobile number.', recipient.normalizedTo);
+    return;
+  }
+
+  if (!recipient.isGroup && !recipient.isLid && typeof session.sock.onWhatsApp === 'function') {
+    const matches = await session.sock.onWhatsApp(recipient.jid);
+    const exists = Array.isArray(matches) && matches.some((match) => match.exists);
+    if (!exists) {
+      await markMessageFailed(message, `The number ${recipient.normalizedTo} is not registered on WhatsApp.`, recipient.normalizedTo);
+      return;
+    }
+
+  // "Humanized Delivery" Presence & Delay
+  let isHumanized = false;
+  let isAudio = false;
+  try {
+    if (message.payload) {
+      const payload = typeof message.payload === 'string' ? JSON.parse(message.payload) : message.payload;
+      if (payload.humanize) isHumanized = true;
+      if (payload.media_url && payload.media_url.match(/\.(mp3|ogg|wav)$/i)) isAudio = true;
+    }
+  } catch (e) {
+    // skip
+  }
+
+  if (isHumanized && typeof session.sock.sendPresenceUpdate === 'function') {
+    const presenceStatus = isAudio ? 'recording' : 'composing';
+    try {
+      await session.sock.sendPresenceUpdate('available');
+      await session.sock.sendPresenceUpdate(presenceStatus, recipient.jid);
+      const delayMs = Math.floor(Math.random() * 3000) + 2000; // 2 to 5 seconds
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      await session.sock.sendPresenceUpdate('paused', recipient.jid);
+    } catch (err) {
+      logger.warn({ err }, 'Failed to send presence update, continuing anyway.');
+    }
+  }
+  }
+
+  let payload = {};
+  try {
+    payload = message.payload ? JSON.parse(String(message.payload)) : {};
+  } catch {
+    payload = {};
+  }
+
+  const attachment = payload?.attachment;
+  let outgoingMessage;
+
+  if (attachment?.path) {
+    if (!existsSync(attachment.path)) {
+      await markMessageFailed(message, 'Attachment file is missing from storage.', recipient.normalizedTo);
+      return;
+    }
+
+    const attachmentType = String(attachment.type || message.message_type || 'document');
+    const hasCaption = String(message.body || '').trim() !== '';
+    const commonMedia = {
+      mimetype: attachment.mime || undefined,
+      fileName: attachment.name || undefined
+    };
+    if (hasCaption) {
+      commonMedia.caption = String(message.body || '');
+    }
+
+    const fileStats = statSync(attachment.path);
+    if (!fileStats.isFile()) {
+      await markMessageFailed(message, 'Attachment path is invalid.', recipient.normalizedTo);
+      return;
+    }
+
+    if (attachmentType === 'image') {
+      outgoingMessage = { image: { url: attachment.path }, ...commonMedia };
+    } else if (attachmentType === 'video') {
+      outgoingMessage = { video: { url: attachment.path }, ...commonMedia };
+    } else {
+      outgoingMessage = { document: { url: attachment.path }, ...commonMedia };
+    }
+  } else {
+    outgoingMessage = { text: String(message.body) };
+  }
+
+  if (!session.sock) {
+      throw new Error('WhatsApp connection lost during humanized delay.');
+    }
+    const result = await session.sock.sendMessage(recipient.jid, outgoingMessage);
+  await markMessageSent(message, result, recipient.normalizedTo);
 }
 
 async function sendWebhook(userId, payload) {
@@ -452,32 +963,6 @@ async function markMessageFailed(message, error, normalizedTo = null) {
   }
 }
 
-async function sendQueuedMessage(message) {
-  const session = await startSession(String(message.user_id));
-  await new Promise((resolve) => setTimeout(resolve, SEND_DELAY_MS));
-
-  if (session.state !== 'connected' || !session.sock) {
-    throw new Error('WhatsApp device is not connected.');
-  }
-
-  const recipient = normalizeRecipient(message.recipient);
-  if (!recipient.jid) {
-    await markMessageFailed(message, 'Invalid recipient. Use an international number or a 10-digit Indian mobile number.', recipient.normalizedTo);
-    return;
-  }
-
-  if (!recipient.isGroup && typeof session.sock.onWhatsApp === 'function') {
-    const matches = await session.sock.onWhatsApp(recipient.jid);
-    const exists = Array.isArray(matches) && matches.some((match) => match.exists);
-    if (!exists) {
-      await markMessageFailed(message, `The number ${recipient.normalizedTo} is not registered on WhatsApp.`, recipient.normalizedTo);
-      return;
-    }
-  }
-
-  const result = await session.sock.sendMessage(recipient.jid, { text: String(message.body) });
-  await markMessageSent(message, result, recipient.normalizedTo);
-}
 
 let queueBusy = false;
 async function processQueueOnce() {
@@ -487,12 +972,31 @@ async function processQueueOnce() {
 
   queueBusy = true;
   try {
+    await processBirthdayTasks(new Date());
     const message = await claimNextMessage();
     if (message) {
       try {
         await sendQueuedMessage(message);
       } catch (error) {
         await markMessageFailed(message, error.message);
+      }
+    } else {
+      const now = Date.now();
+      for (const session of sessions.values()) {
+        if (session.wasSleeping && !session.sleeping) {
+          const lastActivity = session.lastActivityAt || now;
+          if (now - lastActivity > 5 * 60 * 1000) {
+            logger.info('Session for user ' + session.userId + ' was inactive for 5 minutes. Returning to sleep mode.');
+            session.wasSleeping = false;
+            session.sleeping = true;
+            session.qr = null;
+            session.hasQr = false;
+            if (session.sock) {
+              session.sock.end?.();
+            }
+            await updateSessionRecord(session.userId, session);
+          }
+        }
       }
     }
   } catch (error) {
@@ -540,6 +1044,41 @@ app.post('/sessions/:userId/logout', async (req, res) => {
   res.json({ ok: true, session: publicSession(getSession(req.params.userId)) });
 });
 
+app.post('/sessions/:userId/sleep', async (req, res) => {
+  const session = getSession(req.params.userId);
+  session.sleeping = true;
+  session.qr = null;
+  session.hasQr = false;
+  session.error = null;
+
+  try {
+    if (session.sock) {
+      session.sock.end?.();
+    }
+  } catch (error) {
+    session.error = error.message;
+  }
+
+  session.sock = null;
+  session.state = 'idle';
+  await updateSessionRecord(req.params.userId, session);
+  res.json({ ok: true, session: publicSession(session) });
+});
+
+app.post('/sessions/:userId/wake', async (req, res) => {
+  try {
+    const session = getSession(req.params.userId);
+    session.sleeping = false;
+    const started = await startSession(req.params.userId);
+    res.json({ ok: true, session: publicSession(started) });
+  } catch (error) {
+    const session = getSession(req.params.userId);
+    session.state = 'error';
+    session.error = error.message;
+    res.status(500).json({ ok: false, error: error.message, session: publicSession(session) });
+  }
+});
+
 app.post('/sessions/:userId/send', async (req, res) => {
   const session = getSession(req.params.userId);
   const recipient = normalizeRecipient(req.body.to);
@@ -560,7 +1099,7 @@ app.post('/sessions/:userId/send', async (req, res) => {
   }
 
   try {
-    if (!recipient.isGroup && typeof session.sock.onWhatsApp === 'function') {
+    if (!recipient.isGroup && !recipient.isLid && typeof session.sock.onWhatsApp === 'function') {
       const matches = await session.sock.onWhatsApp(recipient.jid);
       const exists = Array.isArray(matches) && matches.some((match) => match.exists);
 

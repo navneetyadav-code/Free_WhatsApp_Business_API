@@ -22,6 +22,8 @@ require_once __DIR__ . '/lib/Support.php';
 require_once __DIR__ . '/lib/Auth.php';
 require_once __DIR__ . '/lib/ApiCredentials.php';
 require_once __DIR__ . '/lib/MessageQueue.php';
+require_once __DIR__ . '/lib/BirthdayTasks.php';
 require_once __DIR__ . '/lib/WorkerClient.php';
 
 Database::configure($config['db']);
+ensure_birthday_task_tables();
