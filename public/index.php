@@ -3,6 +3,8 @@
 declare(strict_types=1);
 if (function_exists('opcache_reset')) { opcache_reset(); }
 
+if (!file_exists(dirname(__DIR__) . '/.env')) { header('Location: ../setup.php'); exit; }
+
 require_once dirname(__DIR__) . '/src/bootstrap.php';
 
 $page = $_GET['page'] ?? 'dashboard';
@@ -368,4 +370,5 @@ require $view;
 $content = ob_get_clean();
 
 require dirname(__DIR__) . '/src/pages/layout.php';
+
 
