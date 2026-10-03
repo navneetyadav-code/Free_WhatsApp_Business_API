@@ -1,0 +1,2 @@
+name,recipient_source,contact_phone,recipient_name,recipient_phone,birthday_date,send_time,timezone,final_message_template,emoji_pool,countdown_enabled,day_message_template,hour_message_template,minute_message_template
+Best friend birthday,number,,Ananya,+919507286092,2026-12-31,00:00,Asia/Kolkata,Happy Birthday {name}! Wishing you an amazing year ahead {emoji},"🎉,🎂,🥳,✨",1,Only {days_left} day(s) left for {name}'s birthday {emoji},Just {hours_left} hour(s) left until {name}'s birthday {emoji},Only {minutes_left} minute(s) left until {name}'s birthday {emoji}

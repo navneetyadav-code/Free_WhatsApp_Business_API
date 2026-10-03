@@ -69,9 +69,6 @@ $contactOptions = $contactOptionsStmt->fetchAll();
 $birthdayTasks = recent_birthday_tasks((int) $user['id']);
 $editingCampaignId = max(0, (int) ($_GET['edit'] ?? 0));
 $editingCampaign = $editingCampaignId ? get_campaign((int) $user['id'], $editingCampaignId) : null;
-$editingBirthdayTaskId = $section === 'birthday-tasks' ? max(0, (int) ($_GET['edit'] ?? 0)) : 0;
-$editingBirthdayTask = $editingBirthdayTaskId ? get_birthday_task((int) $user['id'], $editingBirthdayTaskId) : null;
-$birthdayTaskForm = birthday_task_form_values($editingBirthdayTask);
 
 $webhookStmt = $pdo->prepare('SELECT * FROM webhooks WHERE user_id = ? LIMIT 1');
 $webhookStmt->execute([$user['id']]);
@@ -1648,3 +1645,4 @@ function page_header(string $title, string $subtitle): void
 <?php endif; ?>
 </section>
 <script src="<?= e(base_url('assets/dashboard.js')) ?>?v=<?= time() ?>"></script>
+
