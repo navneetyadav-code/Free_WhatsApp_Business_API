@@ -4,8 +4,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $message = $_POST['message'] ?? '';
     $apiKey = $_POST['api_key'] ?? '';
 
-    // URL to your ngrok tunnel
-    $apiUrl = ' https://slightly-ascend-unreal.ngrok-free.dev/api/send';
+    // URL to your ngrok tunnel pointing to XAMPP
+    $apiUrl = 'https://slightly-ascend-unreal.ngrok-free.dev/whatsapp-api/public/api/send.php';
 
     $payload = json_encode([
         'to' => $to,
@@ -80,3 +80,4 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
 </body>
 </html>
+
