@@ -5,7 +5,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $apiKey = $_POST['api_key'] ?? '';
 
     // URL to your ngrok tunnel
-    $apiUrl = 'https://pulmonary-unweave-backlash.ngrok-free.dev/api/send';
+    $apiUrl = ' https://slightly-ascend-unreal.ngrok-free.dev/api/send';
 
     $payload = json_encode([
         'to' => $to,
