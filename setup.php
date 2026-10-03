@@ -27,6 +27,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$isInstalled) {
             $sql = file_get_contents('database.sql');
             $pdo->exec($sql);
             $logs[] = "Database schema imported successfully from database.sql.";
+            
+            // Clear out demo data and insert new admin
+            $adminName = $_POST['admin_name'] ?? 'Admin';
+            $adminEmail = $_POST['admin_email'] ?? 'admin@localhost.com';
+            $adminPass = $_POST['admin_pass'] ?? 'password';
+            
+            $pdo->exec("SET FOREIGN_KEY_CHECKS = 0;");
+            $tables = ['users', 'api_keys', 'api_request_logs', 'campaigns', 'chatbot_rules', 'contacts', 'message_logs', 'message_queue', 'webhooks', 'whatsapp_sessions'];
+            foreach($tables as $table) {
+                try {
+                    $pdo->exec("TRUNCATE TABLE `$table`");
+                } catch(Exception $e) {}
+            }
+            $pdo->exec("SET FOREIGN_KEY_CHECKS = 1;");
+            
+            $stmt = $pdo->prepare('INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)');
+            $stmt->execute([$adminName, $adminEmail, password_hash($adminPass, PASSWORD_DEFAULT)]);
+            $logs[] = "Admin user ($adminEmail) created successfully and demo data cleared.";
+            
         } else {
             $logs[] = "Warning: database.sql not found! Schema was not imported.";
         }
@@ -110,7 +129,7 @@ ENV;
                     <ol style="margin-bottom: 0;">
                         <li>Double-click <code>start-worker.bat</code> in your folder to boot up the WhatsApp engine.</li>
                         <li>Click the button below to access your dashboard.</li>
-                        <li>Default Login: <b>admin@admin.com</b> / <b>12345678</b></li>
+                        <li>Log in using the email and password you just created!</li>
                     </ol>
                 </div>
                 
@@ -138,6 +157,7 @@ ENV;
             <?php endif; ?>
 
             <form method="POST">
+                <h3 style="margin-top: 0; margin-bottom: 1rem; font-size: 16px; color: #334155;">Database Configuration</h3>
                 <div class="form-group">
                     <label>Database Host</label>
                     <input type="text" name="db_host" value="127.0.0.1" required>
@@ -154,6 +174,21 @@ ENV;
                     <label>Database Password</label>
                     <input type="password" name="db_pass" placeholder="(Leave blank if default XAMPP)">
                 </div>
+
+                <hr style="margin: 2rem 0; border: 0; border-top: 1px solid #e2e8f0;">
+                <h3 style="margin-top: 0; margin-bottom: 1rem; font-size: 16px; color: #334155;">Create Admin Account</h3>
+                <div class="form-group">
+                    <label>Your Name</label>
+                    <input type="text" name="admin_name" placeholder="John Doe" required>
+                </div>
+                <div class="form-group">
+                    <label>Email Address (Login ID)</label>
+                    <input type="text" name="admin_email" placeholder="admin@example.com" required>
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" name="admin_pass" placeholder="••••••••" required>
+                </div>
                 
                 <button type="submit" id="submitBtn" onclick="this.innerHTML='Installing... Please wait (Installing NPM might take 1 min)'; this.style.opacity='0.8';">Complete Setup</button>
             </form>
@@ -161,4 +196,3 @@ ENV;
     </div>
 </body>
 </html>
-
